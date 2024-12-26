@@ -37,7 +37,7 @@ async function initDB() {
   try {
     await client.connect();
     console.log("Connected to MongoDB!");
-    const db = client.db("scrapedDataSharif");
+    const db = client.db("scrapedData");
     successfulCollection = db.collection("addresses");
     unsuccessfulCollection = db.collection("unsuccessfulAddresses");
     sheetDataCollection = db.collection("sheetData");
@@ -126,7 +126,7 @@ function splitAddress(address) {
 (async () => {
   const combinedData = await fetchSheetData();
   if (combinedData.length === 0) {
-    // console.log("No data available to scrape.");
+    console.log("No data available to scrape.");
     return;
   }
 
@@ -288,7 +288,7 @@ async function run() {
               squareFeet: data.sqft,
               price: data.price,
             };
-            // console.log(document);
+            console.log(document);
 
             // Insert the data into MongoDB
             await insertSuccessfulData(document);

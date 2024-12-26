@@ -11,11 +11,22 @@ dotenv.config();
 // Initialize Puppeteer with stealth plugin
 puppeteer.use(StealthPlugin());
 
+// Load JSON files
+const addressData = JSON.parse(
+  fs.readFileSync(new URL("../json/address.json", import.meta.url))
+);
+const priceData = JSON.parse(
+  fs.readFileSync(new URL("../json/price.json", import.meta.url))
+);
+const sqftData = JSON.parse(
+  fs.readFileSync(new URL("../json/sqft.json", import.meta.url))
+);
+
 const limit = pLimit(2); // Set a limit for concurrent tasks
 
 // MongoDB connection URI and client setup
 const uri =
-  "mongodb+srv://scrapedData:271Zj3AArdKaeW75@cluster0.k6zwazt.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
+  "mongodb+srv://charlieScrape:poTeSWQ4yDQ8F0Hb@cluster0.k6zwazt.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
 const client = new MongoClient(uri, {
   serverApi: {
     version: "1",
@@ -30,17 +41,15 @@ const port = process.env.PORT || 3000;
 
 let successfulCollection;
 let unsuccessfulCollection;
-let sheetDataCollection;
 
 // Initialize MongoDB collections
 async function initDB() {
   try {
     await client.connect();
     console.log("Connected to MongoDB!");
-    const db = client.db("scrapedDataSharif");
+    const db = client.db("scrapedData");
     successfulCollection = db.collection("addresses");
     unsuccessfulCollection = db.collection("unsuccessfulAddresses");
-    sheetDataCollection = db.collection("sheetData");
   } catch (error) {
     // console.error("Error connecting to MongoDB:", error);
   }
@@ -88,23 +97,6 @@ app.get("/get-unsuccessful-data", async (req, res) => {
   }
 });
 
-// Fetch data from MongoDB
-async function fetchSheetData() {
-  try {
-    const sheetData = await sheetDataCollection.find({}).toArray();
-
-    // Map the data into the required format
-    return sheetData.map((item) => ({
-      address: item?.FullAddress || null,
-      price: item?.Price || null,
-      sqft: item?.Sqft || null,
-    }));
-  } catch (error) {
-    // console.error("Error fetching sheetData:", error);
-    return [];
-  }
-}
-
 // Split address function
 function splitAddress(address) {
   if (!address || typeof address !== "string") {
@@ -121,30 +113,18 @@ function splitAddress(address) {
   return formattedAddress;
 }
 
-// Fetch data from MongoDB
-// Ensure the script is wrapped inside an async function to allow proper control flow
-(async () => {
-  const combinedData = await fetchSheetData();
-  if (combinedData.length === 0) {
-    // console.log("No data available to scrape.");
-    return;
-  }
-
-  await run();
-})();
+// Combine address, price, and square footage
+const combinedData = addressData.map((address, index) => ({
+  address,
+  price: priceData[index],
+  sqft: sqftData[index],
+}));
 
 // Modify the code in your 'run' function
 async function run() {
   try {
     // Connect to MongoDB
     await initDB();
-
-    // Fetch data from MongoDB
-    const combinedData = await fetchSheetData();
-    if (combinedData.length === 0) {
-      console.log("No data available to scrape.");
-      return;
-    }
 
     // Scrape data for each address using concurrency
     await Promise.all(
@@ -200,6 +180,7 @@ async function run() {
               timeout: 60000,
             });
 
+            // First scraping step
             const firstScrapedData = await page.evaluate(() => {
               const name =
                 document
@@ -230,70 +211,59 @@ async function run() {
             });
 
             if (!firstScrapedData.name) {
-              // console.log(`No details found for address: ${data.address}`);
-              return; // Skip if no data found for first set
+              throw new Error("No details found for address");
             }
 
-            await page.goBack({ waitUntil: "domcontentloaded" });
-
-            await page.waitForSelector(
-              "#site-content .break-word a:nth-of-type(2)"
-            );
-            const linkToClick = await page.$eval(
-              "#site-content .break-word a:nth-of-type(2)",
-              (link) => link.href
-            );
-            await page.goto(linkToClick, { waitUntil: "domcontentloaded" });
-
+            // Second scraping step
             const secondScrapedData = await page.evaluate(() => {
-              const name =
+              const name2 =
                 document
-                  .querySelector("#full_name_section .fullname")
+                  .querySelectorAll("#full_name_section .fullname")
                   ?.textContent?.trim() || null;
-              const secondPhoneNumber =
+              const phone2 =
                 document
-                  .querySelector("#phone_number_section dl dt a")
+                  .querySelectorAll("#phone_number_section dl dt a")
                   ?.textContent?.trim() || null;
-              let email = null;
+              let email2 = null;
               document
                 .querySelectorAll("#email_section .detail-box-email h3")
-                .forEach((emailElement) => {
-                  const emailText = emailElement.textContent.trim();
-                  if (
-                    /@gmail\.com|@yahoo\.com|@hotmail\.com|@aol\.com|@msn\.com|@outlook\.com/.test(
-                      emailText
-                    )
-                  ) {
-                    email = emailText;
+                .forEach((emailElement, index) => {
+                  if (index === 1) {
+                    const emailText = emailElement.textContent.trim();
+                    if (
+                      /@gmail\.com|@yahoo\.com|@hotmail\.com|@aol\.com|@msn\.com|@outlook\.com/.test(
+                        emailText
+                      )
+                    ) {
+                      email2 = emailText;
+                    }
                   }
                 });
-              const fullAddress =
+              const fullAddress2 =
                 document
-                  .querySelector("a[title^='Search people living at']")
+                  .querySelectorAll("a[title^='Search people living at']")
                   ?.textContent?.trim() || null;
-              return { name, secondPhoneNumber, email, fullAddress };
+              return { name2, phone2, email2, fullAddress2 };
             });
 
-            // Prepare the data in the desired structure
+            // Save successful data
             const document = {
               SearchAddress: data.address,
               name1: firstScrapedData.name,
               phone1: firstScrapedData.firstPhoneNumber,
               email1: firstScrapedData.email,
               fullAddress1: firstScrapedData.fullAddress,
-              name2: secondScrapedData.name,
-              phone2: secondScrapedData.secondPhoneNumber,
-              email2: secondScrapedData.email,
-              fullAddress2: secondScrapedData.fullAddress,
-              squareFeet: data.sqft,
+              name2: secondScrapedData.name2,
+              phone2: secondScrapedData.phone2,
+              email2: secondScrapedData.email2,
+              fullAddress2: secondScrapedData.fullAddress2,
               price: data.price,
+              squareFeet: data.sqft,
             };
-            // console.log(document);
-
-            // Insert the data into MongoDB
             await insertSuccessfulData(document);
           } catch (error) {
             // console.error(`Error scraping address: ${data.address}`, error);
+
             // Save unsuccessful data
             const unsuccessfulDocument = {
               SearchAddress: data.address,
@@ -310,9 +280,9 @@ async function run() {
       )
     );
   } catch (error) {
-    // console.error("Error during MongoDB connection:", error);
+    // console.error("Error during scraping process:", error);
   } finally {
-    console.log("MongoDB connection completed.");
+    console.log("Scraping process completed.");
   }
 }
 

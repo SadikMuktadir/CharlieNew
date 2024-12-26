@@ -4,18 +4,27 @@ import fs from "fs";
 import dotenv from "dotenv";
 import pLimit from "p-limit";
 import { MongoClient } from "mongodb";
-import express from "express";
 
 dotenv.config();
 
-// Initialize Puppeteer with stealth plugin
 puppeteer.use(StealthPlugin());
 
-const limit = pLimit(2); // Set a limit for concurrent tasks
+// Load JSON files
+const addressData = JSON.parse(
+  fs.readFileSync(new URL("../json/address.json", import.meta.url))
+);
+const priceData = JSON.parse(
+  fs.readFileSync(new URL("../json/price.json", import.meta.url))
+);
+const sqftData = JSON.parse(
+  fs.readFileSync(new URL("../json/sqft.json", import.meta.url))
+);
+
+const limit = pLimit(5); // Set a limit for concurrent tasks
 
 // MongoDB connection URI and client setup
 const uri =
-  "mongodb+srv://scrapedData:271Zj3AArdKaeW75@cluster0.k6zwazt.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
+  "mongodb+srv://charlieScrape:poTeSWQ4yDQ8F0Hb@cluster0.k6zwazt.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
 const client = new MongoClient(uri, {
   serverApi: {
     version: "1",
@@ -24,85 +33,11 @@ const client = new MongoClient(uri, {
   },
 });
 
-// Express setup
-const app = express();
-const port = process.env.PORT || 3000;
-
-let successfulCollection;
-let unsuccessfulCollection;
-let sheetDataCollection;
-
-// Initialize MongoDB collections
-async function initDB() {
-  try {
-    await client.connect();
-    console.log("Connected to MongoDB!");
-    const db = client.db("scrapedDataSharif");
-    successfulCollection = db.collection("addresses");
-    unsuccessfulCollection = db.collection("unsuccessfulAddresses");
-    sheetDataCollection = db.collection("sheetData");
-  } catch (error) {
-    // console.error("Error connecting to MongoDB:", error);
-  }
-}
-
-// Function to insert successful data into MongoDB
-async function insertSuccessfulData(data) {
-  try {
-    await successfulCollection.insertOne(data);
-    console.log("Successful data inserted into MongoDB");
-  } catch (error) {
-    // console.error("Error inserting successful data:", error);
-  }
-}
-
-// Function to insert unsuccessful data into MongoDB
-async function insertUnsuccessfulData(data) {
-  try {
-    await unsuccessfulCollection.insertOne(data);
-    console.log("Unsuccessful data inserted into MongoDB");
-  } catch (error) {
-    // console.error("Error inserting unsuccessful data:", error);
-  }
-}
-
-// Route to get scraped data from MongoDB
-app.get("/get-scraped-data", async (req, res) => {
-  try {
-    const data = await successfulCollection.find({}).toArray();
-    res.json(data);
-  } catch (error) {
-    // console.log("Error fetching data:", error);
-    res.status(500).send("Error fetching data");
-  }
-});
-
-// Route to get unsuccessful data from MongoDB
-app.get("/get-unsuccessful-data", async (req, res) => {
-  try {
-    const data = await unsuccessfulCollection.find({}).toArray();
-    res.json(data);
-  } catch (error) {
-    // console.log("Error fetching unsuccessful data:", error);
-    res.status(500).send("Error fetching data");
-  }
-});
-
-// Fetch data from MongoDB
-async function fetchSheetData() {
-  try {
-    const sheetData = await sheetDataCollection.find({}).toArray();
-
-    // Map the data into the required format
-    return sheetData.map((item) => ({
-      address: item?.FullAddress || null,
-      price: item?.Price || null,
-      sqft: item?.Sqft || null,
-    }));
-  } catch (error) {
-    // console.error("Error fetching sheetData:", error);
-    return [];
-  }
+async function insertData(data) {
+  const db = client.db("scrapingDB"); // Database name
+  const collection = db.collection("scrapedData"); // Collection name
+  await collection.insertOne(data); // Insert one document into the collection
+  console.log("Data inserted into MongoDB:", data.address);
 }
 
 // Split address function
@@ -121,30 +56,18 @@ function splitAddress(address) {
   return formattedAddress;
 }
 
-// Fetch data from MongoDB
-// Ensure the script is wrapped inside an async function to allow proper control flow
-(async () => {
-  const combinedData = await fetchSheetData();
-  if (combinedData.length === 0) {
-    // console.log("No data available to scrape.");
-    return;
-  }
+// Combine address, price, and square footage
+const combinedData = addressData.map((address, index) => ({
+  address,
+  price: priceData[index],
+  sqft: sqftData[index],
+}));
 
-  await run();
-})();
-
-// Modify the code in your 'run' function
 async function run() {
   try {
     // Connect to MongoDB
-    await initDB();
-
-    // Fetch data from MongoDB
-    const combinedData = await fetchSheetData();
-    if (combinedData.length === 0) {
-      console.log("No data available to scrape.");
-      return;
-    }
+    await client.connect();
+    console.log("Connected to MongoDB!");
 
     // Scrape data for each address using concurrency
     await Promise.all(
@@ -230,7 +153,7 @@ async function run() {
             });
 
             if (!firstScrapedData.name) {
-              // console.log(`No details found for address: ${data.address}`);
+              console.log(`No details found for address: ${data.address}`);
               return; // Skip if no data found for first set
             }
 
@@ -274,33 +197,19 @@ async function run() {
               return { name, secondPhoneNumber, email, fullAddress };
             });
 
-            // Prepare the data in the desired structure
+            // Combine all data into an object to insert into MongoDB
             const document = {
-              SearchAddress: data.address,
-              name1: firstScrapedData.name,
-              phone1: firstScrapedData.firstPhoneNumber,
-              email1: firstScrapedData.email,
-              fullAddress1: firstScrapedData.fullAddress,
-              name2: secondScrapedData.name,
-              phone2: secondScrapedData.secondPhoneNumber,
-              email2: secondScrapedData.email,
-              fullAddress2: secondScrapedData.fullAddress,
-              squareFeet: data.sqft,
+              address: data.address,
               price: data.price,
+              sqft: data.sqft,
+              firstPerson: firstScrapedData,
+              secondPerson: secondScrapedData,
             };
-            // console.log(document);
 
-            // Insert the data into MongoDB
-            await insertSuccessfulData(document);
+            // Insert data into MongoDB
+            await insertData(document);
           } catch (error) {
-            // console.error(`Error scraping address: ${data.address}`, error);
-            // Save unsuccessful data
-            const unsuccessfulDocument = {
-              SearchAddress: data.address,
-              price: data.price,
-              squareFeet: data.sqft,
-            };
-            await insertUnsuccessfulData(unsuccessfulDocument);
+            console.error(`Error scraping address: ${data.address}`, error);
           } finally {
             if (browser) {
               await browser.close();
@@ -310,15 +219,11 @@ async function run() {
       )
     );
   } catch (error) {
-    // console.error("Error during MongoDB connection:", error);
+    console.error("Error during MongoDB connection:", error);
   } finally {
-    console.log("MongoDB connection completed.");
+    await client.close(); // Close MongoDB connection
+    console.log("MongoDB connection closed.");
   }
 }
 
 run();
-
-// Start Express server
-app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}`);
-});

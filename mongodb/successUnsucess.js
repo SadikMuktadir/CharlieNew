@@ -11,6 +11,17 @@ dotenv.config();
 // Initialize Puppeteer with stealth plugin
 puppeteer.use(StealthPlugin());
 
+// Load JSON files
+const addressData = JSON.parse(
+  fs.readFileSync(new URL("../json/address.json", import.meta.url))
+);
+const priceData = JSON.parse(
+  fs.readFileSync(new URL("../json/price.json", import.meta.url))
+);
+const sqftData = JSON.parse(
+  fs.readFileSync(new URL("../json/sqft.json", import.meta.url))
+);
+
 const limit = pLimit(2); // Set a limit for concurrent tasks
 
 // MongoDB connection URI and client setup
@@ -30,17 +41,15 @@ const port = process.env.PORT || 3000;
 
 let successfulCollection;
 let unsuccessfulCollection;
-let sheetDataCollection;
 
 // Initialize MongoDB collections
 async function initDB() {
   try {
     await client.connect();
     console.log("Connected to MongoDB!");
-    const db = client.db("scrapedDataSharif");
+    const db = client.db("scrapedData");
     successfulCollection = db.collection("addresses");
     unsuccessfulCollection = db.collection("unsuccessfulAddresses");
-    sheetDataCollection = db.collection("sheetData");
   } catch (error) {
     // console.error("Error connecting to MongoDB:", error);
   }
@@ -83,27 +92,10 @@ app.get("/get-unsuccessful-data", async (req, res) => {
     const data = await unsuccessfulCollection.find({}).toArray();
     res.json(data);
   } catch (error) {
-    // console.log("Error fetching unsuccessful data:", error);
+    console.log("Error fetching unsuccessful data:", error);
     res.status(500).send("Error fetching data");
   }
 });
-
-// Fetch data from MongoDB
-async function fetchSheetData() {
-  try {
-    const sheetData = await sheetDataCollection.find({}).toArray();
-
-    // Map the data into the required format
-    return sheetData.map((item) => ({
-      address: item?.FullAddress || null,
-      price: item?.Price || null,
-      sqft: item?.Sqft || null,
-    }));
-  } catch (error) {
-    // console.error("Error fetching sheetData:", error);
-    return [];
-  }
-}
 
 // Split address function
 function splitAddress(address) {
@@ -121,30 +113,18 @@ function splitAddress(address) {
   return formattedAddress;
 }
 
-// Fetch data from MongoDB
-// Ensure the script is wrapped inside an async function to allow proper control flow
-(async () => {
-  const combinedData = await fetchSheetData();
-  if (combinedData.length === 0) {
-    // console.log("No data available to scrape.");
-    return;
-  }
-
-  await run();
-})();
+// Combine address, price, and square footage
+const combinedData = addressData.map((address, index) => ({
+  address,
+  price: priceData[index],
+  sqft: sqftData[index],
+}));
 
 // Modify the code in your 'run' function
 async function run() {
   try {
     // Connect to MongoDB
     await initDB();
-
-    // Fetch data from MongoDB
-    const combinedData = await fetchSheetData();
-    if (combinedData.length === 0) {
-      console.log("No data available to scrape.");
-      return;
-    }
 
     // Scrape data for each address using concurrency
     await Promise.all(
@@ -288,7 +268,7 @@ async function run() {
               squareFeet: data.sqft,
               price: data.price,
             };
-            // console.log(document);
+            console.log(document);
 
             // Insert the data into MongoDB
             await insertSuccessfulData(document);
